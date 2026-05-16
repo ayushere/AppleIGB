@@ -55,12 +55,14 @@ static inline struct ip6_hdr* ip6_hdr(mbuf_t skb)
 
 static inline struct tcphdr* tcp6_hdr(mbuf_t skb)
 {
-    // Walk IPv6 fixed header + extension headers to find TCP header.
-    // Extension header format: byte[0]=next_hdr, byte[1]=hdr_ext_len (units of 8 bytes, not counting first 8).
-    // Using ip6++ (stride=40) was wrong and could walk past the mbuf end.
-    u8 nexthdr = ip6_hdr(skb)->ip6_ctlun.ip6_un1.ip6_un1_nxt;
-    u8 *cursor = (u8*)ip6_hdr(skb) + sizeof(struct ip6_hdr);
-    u8 *limit  = (u8*)mbuf_data(skb) + mbuf_len(skb);
+    u8 *ip6_base = (u8*)ip6_hdr(skb);
+    u8 *limit    = (u8*)mbuf_data(skb) + mbuf_len(skb);
+    // Guard the initial nexthdr read — without this, a short mbuf causes an
+    // OOB read at ip6_base+6 before the loop bounds checks can fire (Bug 4).
+    if (ip6_base + sizeof(struct ip6_hdr) > limit)
+        return NULL;
+    u8 nexthdr = ((struct ip6_hdr*)ip6_base)->ip6_ctlun.ip6_un1.ip6_un1_nxt;
+    u8 *cursor = ip6_base + sizeof(struct ip6_hdr);
     while (nexthdr != IPPROTO_TCP) {
         if (cursor + 2 > limit)
             return NULL;
@@ -4644,9 +4646,11 @@ static void igb_tx_csum(struct igb_ring *tx_ring, struct igb_tx_buffer *first)
 
 		if(checksumDemanded & DEMAND_IPv6){		// IPv6
 			struct ip6_hdr* ip6 = (struct ip6_hdr*)packet;
+			u8 *limit  = (u8*)mbuf_data(skb) + mbuf_len(skb);
+			// Guard the initial read — same OOB as tcp6_hdr (Bug 4).
+			if ((u8*)ip6 + sizeof(struct ip6_hdr) > limit) return;
 			u_int8_t nexthdr = ip6->ip6_ctlun.ip6_un1.ip6_un1_nxt;
 			u8 *cursor = (u8*)ip6 + sizeof(struct ip6_hdr);
-			u8 *limit  = (u8*)mbuf_data(skb) + mbuf_len(skb);
 			while (nexthdr != IPPROTO_TCP && nexthdr != IPPROTO_UDP) {
 				if (cursor + 2 > limit)
 					return;
