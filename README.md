@@ -2,7 +2,7 @@
 
 Intel onboard LAN driver for macOS, patched to fix kernel panics on **macOS 26.x (Tahoe)**.
 
-This fork fixes three bugs in the original Apple-specific driver code that caused repeated kernel panics on macOS Tahoe 26.x due to stricter mbuf validity checks and Probabilistic GZAlloc (PGZ) guard pages introduced in that release.
+This fork fixes four bugs in the original Apple-specific driver code that caused repeated kernel panics on macOS Tahoe 26.x due to stricter mbuf validity checks, Probabilistic GZAlloc (PGZ) guard pages, and a changed output queue threading model introduced in that release.
 
 ---
 
@@ -115,6 +115,12 @@ Output: `~/Library/Developer/Xcode/DerivedData/AppleIGB-.../Build/Products/Relea
 ---
 
 ## Changelog
+
+### v5.11.6 — 2026-05-16
+- Fixed TX ring use-after-free race between `outputPacket()` and `igb_clean_tx_irq()`
+- Root cause: on Tahoe 26.x, `IOBasicOutputQueue` delivers `outputPacket` from a separate high-priority thread instead of the workloop; `igb_clean_tx_irq` runs on the workloop — without a lock they race on the TX ring, freeing an mbuf while `outputPacket` still holds it
+- Fix: added `IOSimpleLock` (txLock) protecting the TX buffer write-map section in `outputPacket` and the buffer-free section in `igb_clean_tx_irq`
+- Same pattern as the locking fix applied in IntelMausiEthernet for the same Tahoe threading change
 
 ### v5.11.5 — 2026-05-15
 - Fixed `tcp6_hdr()`: replaced unbounded `ip6++` traversal with correct bounds-checked IPv6 extension header walking using `(cursor[1] + 1) * 8` stride
