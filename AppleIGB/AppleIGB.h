@@ -109,9 +109,11 @@ public:
     virtual IOReturn setWakeOnMagicPacket(bool active);
     virtual IOReturn getPacketFilters(const OSSymbol * group, UInt32 * filters) const;
     virtual UInt32 getFeatures() const;
+    IOSimpleLock* getTxLock() const { return txLock; }
 
 private:
 	IOWorkLoop* workLoop;
+	IOSimpleLock* txLock;   // protects TX ring between outputPacket and igb_clean_tx_irq
 	IOPCIDevice* pdev;
 	OSDictionary * mediumDict;
 	IONetworkMedium * mediumTable[MEDIUM_INDEX_COUNT];

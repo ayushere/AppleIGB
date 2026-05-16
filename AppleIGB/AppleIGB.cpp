@@ -6559,6 +6559,10 @@ static bool igb_clean_tx_irq(struct igb_q_vector *q_vector)
 	tx_desc = IGB_TX_DESC(tx_ring, i);
 	i -= tx_ring->count;
 
+#ifdef __APPLE__
+    IOSimpleLock *txLock = ((AppleIGB*)adapter->netdev)->getTxLock();
+#endif
+
 	do {
 		union e1000_adv_tx_desc *eop_desc = tx_buffer->next_to_watch;
 
@@ -6580,7 +6584,10 @@ static bool igb_clean_tx_irq(struct igb_q_vector *q_vector)
 		total_bytes += tx_buffer->bytecount;
 		total_packets += tx_buffer->gso_segs;
 
-		/* free the skb */
+		/* free the skb — lock against concurrent outputPacket on Tahoe */
+#ifdef __APPLE__
+        IOSimpleLockLock(txLock);
+#endif
 		adapter->netdev->freePacket(tx_buffer->skb);
 
 		/* unmap skb header data */
@@ -6593,6 +6600,9 @@ static bool igb_clean_tx_irq(struct igb_q_vector *q_vector)
 		/* clear tx_buffer data */
 		tx_buffer->skb = NULL;
 		dma_unmap_len_set(tx_buffer, len, 0);
+#ifdef __APPLE__
+        IOSimpleLockUnlock(txLock);
+#endif
 		
 		/* clear last DMA location and unmap remaining buffers */
 		while (tx_desc != eop_desc) {
@@ -8999,7 +9009,10 @@ OSDefineMetaClassAndStructors(AppleIGB, super);
 void AppleIGB::free()
 {
 	RELEASE(mediumDict);
-	
+    if (txLock) {
+        IOSimpleLockFree(txLock);
+        txLock = NULL;
+    }
 	super::free();
 }
 
@@ -9068,6 +9081,7 @@ bool AppleIGB::init(OSDictionary *properties)
 		
 	enabledForNetif = false;
     workLoop = NULL;
+    txLock = IOSimpleLockAlloc();
 
 	pdev = NULL;
 	mediumDict = NULL;
@@ -10231,6 +10245,10 @@ UInt32 AppleIGB::outputPacket(mbuf_t skb, void * param)
             goto done;
         }
         /* record the location of the first descriptor for this packet */
+        // Lock against igb_clean_tx_irq which runs on the workloop thread.
+        // On Tahoe, IOBasicOutputQueue delivers outputPacket from a separate
+        // high-priority thread, so the two can race without explicit locking.
+        IOSimpleLockLock(txLock);
         first = &tx_ring->tx_buffer_info[tx_ring->next_to_use];
         first->skb = skb;
         first->bytecount = (u32)mbuf_pkthdr_len(skb);
@@ -10265,6 +10283,7 @@ UInt32 AppleIGB::outputPacket(mbuf_t skb, void * param)
 			tso = igb_tso(tx_ring, first, &hdr_len);
         if (unlikely(tso < 0)){
             igb_unmap_and_free_tx_resource(tx_ring, first);
+            IOSimpleLockUnlock(txLock);
             break;
         } else if (!tso)
             igb_tx_csum(tx_ring, first);
@@ -10272,8 +10291,10 @@ UInt32 AppleIGB::outputPacket(mbuf_t skb, void * param)
         if(!igb_tx_map(tx_ring, first, hdr_len)){
 			netStats->outputErrors += 1;
             pr_debug("output: igb_tx_map failed (%u)\n", netStats->outputErrors);
+            IOSimpleLockUnlock(txLock);
             goto error;
 		}
+        IOSimpleLockUnlock(txLock);
 
 		/* Make sure there is space in the ring for the next send. */
 		//igb_maybe_stop_tx(tx_ring, MAX_SKB_FRAGS + 4);
