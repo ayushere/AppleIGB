@@ -6588,11 +6588,18 @@ static bool igb_clean_tx_irq(struct igb_q_vector *q_vector)
 		total_bytes += tx_buffer->bytecount;
 		total_packets += tx_buffer->gso_segs;
 
-		/* free the skb — lock against concurrent outputPacket on Tahoe */
+		/* Swap out the skb pointer under the spinlock, then free it outside.
+		 * IOSimpleLock disables preemption — freePacket/mbuf_freem can block
+		 * internally (mbuf cluster pool mutex), causing preemption_level 1 panic. */
 #ifdef __APPLE__
         IOSimpleLockLock(txLock);
-#endif
+        mbuf_t skb_to_free = tx_buffer->skb;
+        tx_buffer->skb = NULL;
+        IOSimpleLockUnlock(txLock);
+        adapter->netdev->freePacket(skb_to_free);
+#else
 		adapter->netdev->freePacket(tx_buffer->skb);
+#endif
 
 		/* unmap skb header data */
 #ifndef	__APPLE__
@@ -6602,11 +6609,10 @@ static bool igb_clean_tx_irq(struct igb_q_vector *q_vector)
 		                 DMA_TO_DEVICE);
 #endif
 		/* clear tx_buffer data */
+#ifndef __APPLE__
 		tx_buffer->skb = NULL;
-		dma_unmap_len_set(tx_buffer, len, 0);
-#ifdef __APPLE__
-        IOSimpleLockUnlock(txLock);
 #endif
+		dma_unmap_len_set(tx_buffer, len, 0);
 		
 		/* clear last DMA location and unmap remaining buffers */
 		while (tx_desc != eop_desc) {
@@ -10286,8 +10292,12 @@ UInt32 AppleIGB::outputPacket(mbuf_t skb, void * param)
 		if(useTSO)
 			tso = igb_tso(tx_ring, first, &hdr_len);
         if (unlikely(tso < 0)){
-            igb_unmap_and_free_tx_resource(tx_ring, first);
+            /* Unlock before igb_unmap_and_free_tx_resource: it calls freePacket
+             * which can block, and IOSimpleLock disables preemption. Safe here
+             * because igb_tx_map was never called so next_to_watch is NULL and
+             * igb_clean_tx_irq will not touch this buffer entry. */
             IOSimpleLockUnlock(txLock);
+            igb_unmap_and_free_tx_resource(tx_ring, first);
             break;
         } else if (!tso)
             igb_tx_csum(tx_ring, first);
