@@ -1,3 +1,5 @@
+
+
 # AppleIGB — Tahoe-Compatible Fork
 
 Intel onboard LAN driver for macOS, patched to fix kernel panics on **macOS 26.x (Tahoe)**.
@@ -96,7 +98,7 @@ After reboot:
 ```bash
 kextstat | grep AppleIGB
 ```
-You should see `com.amdosx.driver.AppleIGB (5.11.5)`.
+You should see `com.amdosx.driver.AppleIGB (5.11.6)`.
 
 ---
 
